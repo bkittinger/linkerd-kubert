@@ -17,7 +17,7 @@
 //! # Timeouts
 //!
 //! The server limits how long clients may take to send HTTP/1 request headers
-//! (2s by default, see [`ServerArgs::server_http1_header_read_timeout_secs`]).
+//! (2s by default, see [`ServerArgs::server_http1_header_read_timeout_seconds`]).
 //! This limit also applies to idle keep-alive connections waiting for their
 //! next request. Admission controllers called by the Kubernetes API server
 //! should raise it above the API server's 90s idle connection timeout to avoid
@@ -66,11 +66,11 @@ pub struct ServerArgs {
     /// controller), set this above the API server's 90s idle connection
     /// timeout to avoid sporadic `EOF` errors.
     #[cfg_attr(feature = "clap", clap(
-        long = "server-http1-header-read-timeout-seconds",
+        long,
         default_value = "2",
         value_parser = clap::value_parser!(u64).range(1..),
     ))]
-    pub server_http1_header_read_timeout_secs: u64,
+    pub server_http1_header_read_timeout_seconds: u64,
 }
 
 /// A running server
@@ -80,7 +80,7 @@ pub struct Bound {
     local_addr: SocketAddr,
     tcp: tokio::net::TcpListener,
     tls: Arc<TlsPaths>,
-    http1_header_read_timeout: Duration,
+    opts: ServerOptions,
 }
 
 /// A running server
@@ -139,6 +139,12 @@ struct TlsPaths {
     certs: TlsCertPath,
 }
 
+/// Options derived from [`ServerArgs`]
+#[derive(Copy, Clone, Debug)]
+struct ServerOptions {
+    http1_header_read_timeout: Duration,
+}
+
 // === impl ServerArgs ===
 
 impl ServerArgs {
@@ -162,13 +168,18 @@ impl ServerArgs {
             .await
             .map_err(|e| Error::Bind(self.server_addr, e))?;
         let local_addr = tcp.local_addr().map_err(Error::LocalAddr)?;
+
+        let opts = ServerOptions {
+            http1_header_read_timeout: Duration::from_secs(
+                self.server_http1_header_read_timeout_seconds,
+            ),
+        };
+
         Ok(Bound {
             local_addr,
             tcp,
             tls,
-            http1_header_read_timeout: Duration::from_secs(
-                self.server_http1_header_read_timeout_secs,
-            ),
+            opts,
         })
     }
 }
@@ -203,11 +214,11 @@ impl Bound {
             local_addr,
             tcp,
             tls,
-            http1_header_read_timeout,
+            opts,
         } = self;
 
         let task = tokio::spawn(
-            accept_loop(tcp, drain, service, tls, http1_header_read_timeout)
+            accept_loop(tcp, drain, service, tls, opts)
                 .instrument(info_span!("server", port = %local_addr.port())),
         );
 
@@ -239,7 +250,7 @@ async fn accept_loop<S, B>(
     drain: drain::Watch,
     service: S,
     tls: Arc<TlsPaths>,
-    http1_header_read_timeout: Duration,
+    opts: ServerOptions,
 ) where
     S: Service<hyper::Request<hyper::body::Incoming>, Response = hyper::Response<B>>
         + Clone
@@ -286,18 +297,13 @@ async fn accept_loop<S, B>(
         };
 
         tokio::spawn(
-            serve_conn(
-                socket,
-                drain.clone(),
-                service.clone(),
-                tls.clone(),
-                http1_header_read_timeout,
-            )
-            .instrument(info_span!(
-                "conn",
-                client.ip = %client_addr.ip(),
-                client.port = %client_addr.port(),
-            )),
+            serve_conn(socket, drain.clone(), service.clone(), tls.clone(), opts).instrument(
+                info_span!(
+                    "conn",
+                    client.ip = %client_addr.ip(),
+                    client.port = %client_addr.port(),
+                ),
+            ),
         );
     }
 }
@@ -307,7 +313,7 @@ async fn serve_conn<S, B>(
     drain: drain::Watch,
     service: S,
     tls: Arc<TlsPaths>,
-    http1_header_read_timeout: Duration,
+    opts: ServerOptions,
 ) where
     S: Service<hyper::Request<hyper::body::Incoming>, Response = hyper::Response<B>>
         + Clone
@@ -369,7 +375,7 @@ async fn serve_conn<S, B>(
     // limits how long idle keep-alive connections are held open.
     builder
         .http1()
-        .header_read_timeout(http1_header_read_timeout)
+        .header_read_timeout(opts.http1_header_read_timeout)
         .timer(hyper_util::rt::TokioTimer::default());
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
     let conn = graceful.watch(

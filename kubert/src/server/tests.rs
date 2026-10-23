@@ -42,16 +42,16 @@ async fn load_tls_rustls() {
 
 #[cfg(feature = "clap")]
 #[test]
-fn server_args_http1_header_read_timeout_secs() {
+fn server_args_http1_header_read_timeout_seconds() {
     use clap::Parser;
 
     let args = ServerArgs::try_parse_from(["test"]).expect("valid");
-    assert_eq!(args.server_http1_header_read_timeout_secs, 2);
+    assert_eq!(args.server_http1_header_read_timeout_seconds, 2);
 
     let args =
         ServerArgs::try_parse_from(["test", "--server-http1-header-read-timeout-seconds=100"])
             .expect("valid");
-    assert_eq!(args.server_http1_header_read_timeout_secs, 100);
+    assert_eq!(args.server_http1_header_read_timeout_seconds, 100);
 
     assert!(
         ServerArgs::try_parse_from(["test", "--server-http1-header-read-timeout-seconds=0"])
@@ -61,14 +61,16 @@ fn server_args_http1_header_read_timeout_secs() {
 
 const SERVER_NAME: &str = "kubert.test.example.com";
 
-async fn start_server(timeout_secs: u64) -> (TempDir, drain::Signal, SpawnedServer, TlsCertPath) {
+async fn start_server(
+    timeout_seconds: u64,
+) -> (TempDir, drain::Signal, SpawnedServer, TlsCertPath) {
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let (dir, TlsPaths { key, certs }) = gen_keys();
     let args = ServerArgs {
         server_addr: "127.0.0.1:0".parse().unwrap(),
         server_tls_key: Some(key),
         server_tls_certs: Some(certs.clone()),
-        server_http1_header_read_timeout_secs: timeout_secs,
+        server_http1_header_read_timeout_seconds: timeout_seconds,
     };
     let bound = args.bind().await.expect("bind must succeed");
     let (drain_tx, drain_rx) = drain::channel();
@@ -164,17 +166,20 @@ async fn http1_header_read_timeout_keeps_idle_connection() {
 }
 
 #[tokio::test]
-async fn bind_uses_http1_header_read_timeout_secs() {
+async fn bind_uses_http1_header_read_timeout_seconds() {
     let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let (_dir, TlsPaths { key, certs }) = gen_keys();
     let bound = ServerArgs {
         server_addr: "127.0.0.1:0".parse().unwrap(),
         server_tls_key: Some(key),
         server_tls_certs: Some(certs),
-        server_http1_header_read_timeout_secs: 100,
+        server_http1_header_read_timeout_seconds: 100,
     }
     .bind()
     .await
     .expect("bind must succeed");
-    assert_eq!(bound.http1_header_read_timeout, Duration::from_secs(100));
+    assert_eq!(
+        bound.opts.http1_header_read_timeout,
+        Duration::from_secs(100)
+    );
 }
